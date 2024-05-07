@@ -80,16 +80,22 @@ class FirewallStack(Stack):
             tags=[CfnTag(key="Name", value="AAWorkloadRouteTable1")],
         )
 
-        # Routes for the workload subnet
-        # ec2.CfnRoute(
-        #     self,
-        #     "AAWorkloadToLocal",
-        #     route_table_id=workload_route_table.ref,
-        #     destination_cidr_block="10.0.0.0/16",
-        #     gateway_id="local",
-        # )
 
+        igw_route_table = ec2.CfnRouteTable(
+            self,
+            "AA-IGW-RouteTable1",
+            vpc_id=vpc.vpc_id,
+            tags=[CfnTag(key="Name", value="AA-IGW-RouteTable1")],
+        )
 
+        ec2.CfnGatewayRouteTableAssociation(
+            self,
+            f"AARTAssocIGW",
+            route_table_id=igw_route_table.ref,
+            gateway_id=igw.ref,
+        )
+
+        
 
         # Associate route tables with the subnets
         ec2.CfnSubnetRouteTableAssociation(
@@ -158,7 +164,17 @@ class FirewallStack(Stack):
         )
 
 
+        # Routes for the workload subnet
+        # ec2.CfnRoute(
+        #     self,
+        #     "AAWorkloadToLocal",
+        #     route_table_id=workload_route_table.ref,
+        #     destination_cidr_block="0.0.0.0/0",
+        #     vpc_endpoint_id=Fn.select(0, firewall.attr_endpoint_ids),
+        # )
 
+        
+        
 
         CfnOutput(self, "firewall_endpoints", value=Fn.select(0, firewall.attr_endpoint_ids))
 
@@ -170,6 +186,27 @@ class FirewallStack(Stack):
         #     destination_cidr_block="0.0.0.0/0",
         #     gateway_id=Fn.select(0, firewall.attr_endpoint_ids),
         # )
+
+
+
+        # workload route to firewall subnet via VPCE
+        endpoint_str = Fn.select(0, firewall.attr_endpoint_ids)
+
+        ec2.CfnRoute(
+            self,
+            "AAWorkloadToFirewall",
+            route_table_id=workload_route_table.ref,
+            destination_cidr_block="0.0.0.0/0",
+            vpc_endpoint_id=Fn.select(1, Fn.split(":", endpoint_str)),
+        )
+
+        ec2.CfnRoute(
+            self,
+            "AAIGWDefaultRoute",
+            route_table_id=igw_route_table.ref,
+            destination_cidr_block="10.0.0.0/24",
+            vpc_endpoint_id=Fn.select(1, Fn.split(":", endpoint_str)),
+        )
 
 
     # sudo su
