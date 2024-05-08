@@ -50,7 +50,7 @@ class FirewallStack(Stack):
         )
 
         # Attach the Internet Gateway to the VPC
-        aws_ec2.CfnVPCGatewayAttachment(
+        igw_attachment = aws_ec2.CfnVPCGatewayAttachment(
             self,
             "IGWAttach-Firewall-Test",
             vpc_id=vpc.vpc_id,
@@ -83,7 +83,7 @@ class FirewallStack(Stack):
             self,
             "FirewallVPC",
             max_azs=3,
-            nat_gateways=0,
+            cidr="10.0.0.0/16",
             create_internet_gateway=False,
             subnet_configuration=[
                 aws_ec2.SubnetConfiguration(
@@ -107,6 +107,11 @@ class FirewallStack(Stack):
         # Assign vpc to instance and access from other stacks
         self.vpc = vpc
 
+
+        igw = self._create_internet_gateway(vpc)
+        igw_route_table = self._create_igw_route_table(vpc, igw)
+
+
         # Map for future reference
         self.az_to_public_subnet: typing.Dict[str, aws_ec2.ISubnet] = {}
         for subnet in self.vpc.select_subnets(subnet_group_name="PublicSubnet").subnets:
@@ -120,10 +125,9 @@ class FirewallStack(Stack):
 
         self.az_to_private_subnet: typing.Dict[str, aws_ec2.ISubnet] = {}
         for subnet in self.vpc.private_subnets:
-            self.az_to_public_subnet[subnet.availability_zone] = subnet
+            self.az_to_private_subnet[subnet.availability_zone] = subnet
 
-        igw = self._create_internet_gateway(vpc)
-        igw_route_table = self._create_igw_route_table(vpc, igw)
+
 
         # Route table for the workload subnets
         workload_route_table_dict: typing.Dict[str, aws_ec2.CfnRouteTable] = {}
@@ -137,14 +141,16 @@ class FirewallStack(Stack):
 
         # Associate the route tables with the subnets
         for az, route_table in workload_route_table_dict.items():
+            self.az_to_public_subnet[az].node.try_remove_child("RouteTableAssociation")
+            self.az_to_public_subnet[az].node.try_remove_child("RouteTable")
             aws_ec2.CfnSubnetRouteTableAssociation(
                 self,
-                f"WorkloadRTAssocWorkload{az}",
+                f"WorkloadRTAssocWorkload1{az}",
                 subnet_id=self.az_to_public_subnet[az].subnet_id,
                 route_table_id=route_table.ref,
             )
 
-        # Route table for the firewall subnets
+        # Route table for the firewall subnets. FirewallRouteTable
         firewall_route_table_dict: typing.Dict[str, aws_ec2.CfnRouteTable] = {}
         for i, az in enumerate(vpc.availability_zones):
             firewall_route_table_dict[az] = aws_ec2.CfnRouteTable(
@@ -156,12 +162,16 @@ class FirewallStack(Stack):
 
         # Associate the firewall route table with the firewall subnets
         for az, route_table in firewall_route_table_dict.items():
+            self.az_to_firewall_subnet[az].node.try_remove_child("RouteTableAssociation")
+            self.az_to_firewall_subnet[az].node.try_remove_child("RouteTable")
             aws_ec2.CfnSubnetRouteTableAssociation(
                 self,
-                f"FirewallRTAssocWorkload{az}",
+                f"FirewallRTAssocWorkload1{az}",
                 subnet_id=self.az_to_firewall_subnet[az].subnet_id,
                 route_table_id=route_table.ref,
             )
+
+            aws_ec2.CfnRoute(self, f"FirewallRoute{az}", route_table_id=route_table.ref, destination_cidr_block="0.0.0.0/0", gateway_id=igw.ref)
 
         # Create a Firewall
         firewall_policy = self._create_firewall_policy()
@@ -185,35 +195,31 @@ class FirewallStack(Stack):
             tags=[CfnTag(key="name", value="Firewall-Test")],
         )
 
-        CfnOutput(
-            self, "firewall_endpoints", value=Fn.select(0, firewall.attr_endpoint_ids)
-        )
 
         # workload route to firewall subnet via VPCE
-        endpoint_str = Fn.select(0, firewall.attr_endpoint_ids)
-
-        for attr_endpoint in firewall.attr_endpoint_ids:
+        for az, _ in workload_route_table_dict.items():
+            attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)
             endpoint = Fn.select(1, Fn.split(":", attr_endpoint))
-            az = Fn.select(0, Fn.split(":", attr_endpoint))
             aws_ec2.CfnRoute(
                 self,
                 f"WorkloadToFirewallRoute{az}",
-                route_table_id=workload_route_table_dict[az].route_table_id,
+                route_table_id=workload_route_table_dict[az].ref,
                 destination_cidr_block="0.0.0.0/0",
                 vpc_endpoint_id=endpoint,
             )
 
-        # Route for the firewall subnet
-        # aws_ec2.CfnRoute(
-        #     self,
-        #     "AAIGWDefaultRoute",
-        #     route_table_id=igw_route_table.ref,
-        #     destination_cidr_block="10.0.0.0/24",
-        #     vpc_endpoint_id=Fn.select(1, Fn.split(":", endpoint_str)),
-        # )
+        # IGW ingress route. Map IGW to workload subnets
+        for az, _ in self.az_to_public_subnet.items():
+            attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)
+            endpoint = Fn.select(1, Fn.split(":", attr_endpoint))
 
-    # sudo su
-    # yum install -y httpd
-    # systemctl start httpd.service
-    # systemctl enable httpd.service
-    # echo "Hello World from $(hostname -f)" > /var/www/html/index.html
+            attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)
+            true_az = Fn.select(0, Fn.split(":", attr_endpoint))  # this won't work. it's a temp token and not a real value
+
+            aws_ec2.CfnRoute(
+                self,
+                f"FirewallToWorkloadRoute{az}",
+                route_table_id=igw_route_table.ref,
+                destination_cidr_block=self.az_to_public_subnet[az].ipv4_cidr_block,
+                vpc_endpoint_id=endpoint,
+            )
