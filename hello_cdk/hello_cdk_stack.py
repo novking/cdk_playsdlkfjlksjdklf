@@ -5,7 +5,6 @@ from aws_cdk import Fn, CfnOutput, CfnTag
 
 import typing
 
-
 class FirewallStack(Stack):
     def _create_firewall_policy(self):
         rule_string = """
@@ -209,17 +208,20 @@ class FirewallStack(Stack):
             )
 
         # IGW ingress route. Map IGW to workload subnets
-        for az, _ in self.az_to_public_subnet.items():
+        for i, subnet in enumerate(vpc.select_subnets(subnet_group_name="PublicSubnet").subnets):
             attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)
             endpoint = Fn.select(1, Fn.split(":", attr_endpoint))
 
-            attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)
+            attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)  # attr_endpoint_ids = ["us-west-1:vpce-0a1b2c3d4e5f6g7h8"] $Token()
             true_az = Fn.select(0, Fn.split(":", attr_endpoint))  # this won't work. it's a temp token and not a real value
-
+            # same problem, no answer: https://github.com/aws/aws-cdk/discussions/27108
+            # true_az = Fn.select(0, Fn.split(":", Fn.select(i, firewall.attr_endpoint_ids)))  # this won't work. it's a temp token and not a real value
             aws_ec2.CfnRoute(
                 self,
-                f"FirewallToWorkloadRoute{az}",
+                f"IGWIngressToPublicSubnetCider{az}{i}",
                 route_table_id=igw_route_table.ref,
-                destination_cidr_block=self.az_to_public_subnet[az].ipv4_cidr_block,
+                destination_cidr_block=self.az_to_public_subnet[true_az].ipv4_cidr_block,
                 vpc_endpoint_id=endpoint,
             )
+
+            Fn.split("a", firewall.attr_endpoint_ids, 2)
