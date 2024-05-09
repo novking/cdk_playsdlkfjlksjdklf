@@ -5,6 +5,7 @@ from aws_cdk import Fn, CfnOutput, CfnTag
 
 import typing
 
+AZ_LIST = ["us-west-2a", "us-west-2b", "us-west-2c"]
 class FirewallStack(Stack):
     def _create_firewall_policy(self):
         rule_string = """
@@ -81,7 +82,6 @@ class FirewallStack(Stack):
         vpc = aws_ec2.Vpc(
             self,
             "FirewallVPC",
-            max_azs=3,
             cidr="10.0.0.0/16",
             create_internet_gateway=False,
             subnet_configuration=[
@@ -101,6 +101,7 @@ class FirewallStack(Stack):
                     cidr_mask=21,
                 ),
             ],
+            availability_zones=AZ_LIST,
         )
 
         # Assign vpc to instance and access from other stacks
@@ -191,7 +192,7 @@ class FirewallStack(Stack):
                 ]
             ],
             vpc_id=vpc.vpc_id,
-            tags=[CfnTag(key="name", value="Firewall-Test")],
+            tags=[CfnTag(key="Name", value="Firewall-Test")],
         )
 
 
@@ -208,20 +209,18 @@ class FirewallStack(Stack):
             )
 
         # IGW ingress route. Map IGW to workload subnets
-        for i, subnet in enumerate(vpc.select_subnets(subnet_group_name="PublicSubnet").subnets):
-            attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)
-            endpoint = Fn.select(1, Fn.split(":", attr_endpoint))
+        az_map = {
+            "a":"us-west-2a",
+            "b":"us-west-2b",
+            "c":"us-west-2c",
+        }
 
-            attr_endpoint = Fn.select(i, firewall.attr_endpoint_ids)  # attr_endpoint_ids = ["us-west-1:vpce-0a1b2c3d4e5f6g7h8"] $Token()
-            true_az = Fn.select(0, Fn.split(":", attr_endpoint))  # this won't work. it's a temp token and not a real value
-            # same problem, no answer: https://github.com/aws/aws-cdk/discussions/27108
-            # true_az = Fn.select(0, Fn.split(":", Fn.select(i, firewall.attr_endpoint_ids)))  # this won't work. it's a temp token and not a real value
+        for i, az in az_map.items():
             aws_ec2.CfnRoute(
                 self,
                 f"IGWIngressToPublicSubnetCider{az}{i}",
                 route_table_id=igw_route_table.ref,
-                destination_cidr_block=self.az_to_public_subnet[true_az].ipv4_cidr_block,
-                vpc_endpoint_id=endpoint,
+                destination_cidr_block=self.az_to_public_subnet[az].ipv4_cidr_block,
+                vpc_endpoint_id=Fn.select(0, Fn.split(",", Fn.select(1, Fn.split(i, Fn.join(",", firewall.attr_endpoint_ids))))),
             )
 
-            Fn.split("a", firewall.attr_endpoint_ids, 2)
